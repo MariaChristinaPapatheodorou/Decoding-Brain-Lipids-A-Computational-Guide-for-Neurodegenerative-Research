@@ -1,0 +1,84 @@
+# ============================================================
+# INSTALL REQUIRED PACKAGES
+# ============================================================
+BiocManager::install(c("lipidr", "fgsea"))
+install.packages(c("lipidomeR", "ggplot2", "dplyr"))
+
+# ============================================================
+# STEP 1 — LSEA: Class-level enrichment [5]
+# ============================================================
+library(lipidr)
+
+# Run LSEA — lipids ranked by logFC from de_results
+enrich_results <- lsea(
+  de_results,
+  rank.by  = "logFC",
+  min_size = 4,         # minimum lipid species per class
+  nperm    = 1000
+)
+
+# Extract significantly enriched lipid sets
+sig_sets <- significant_lipidsets(
+  enrich_results,
+  p.cutoff   = 0.05,
+  size.cutoff = 4
+)
+
+print(sig_sets)
+
+# Visualize class-level enrichment
+# Shows logFC distribution per class with enrichment significance
+plot_class_enrichment(de_results, sig_sets) +
+  ggtitle("Class-level Enrichment: Disease vs. Control") +
+  theme_bw()
+
+# ============================================================
+# STEP 2 — Chain length enrichment [5]
+# ============================================================
+
+# Visualize enrichment by total carbon chain length
+plot_enrichment(
+  de_results,
+  sig_sets,
+  annotation = "length"   # group lipids by total chain length
+) +
+  ggtitle("Chain Length Enrichment") +
+  theme_bw()
+
+# Visualize enrichment by degree of unsaturation
+plot_enrichment(
+  de_results,
+  sig_sets,
+  annotation = "unsat"    # group lipids by number of double bonds
+) +
+  ggtitle("Unsaturation Enrichment — Oxidative Stress Marker") +
+  theme_bw()
+
+# ============================================================
+# STEP 3 — lipidomeR: 2D structural heatmap [new-M]
+# Chain length × unsaturation across the entire lipidome
+# ============================================================
+library(lipidomeR)
+
+# Map lipid names to chain length and unsaturation values
+lipid_names  <- rownames(assay(d_norm_istd))
+names_mapped <- map_lipid_names(x = lipid_names)
+
+# Compute limma regression models for each lipid
+# Models explain lipid abundance as function of disease group
+models <- compute_models_with_limma(
+  x             = assay(d_norm_istd),
+  dependent.var = "Molecule",
+  independent   = colData(d_norm_istd)$group
+)
+
+# Generate the lipidomeR 2D structural heatmap
+# x-axis = chain length, y-axis = double bonds
+# Color = regression coefficient (positive = up, negative = down)
+heatmap_lipidome_with_limma(
+  x           = models,
+  names.mapping = names_mapped,
+  axis.x.carbons = TRUE,
+  plot.all    = FALSE,
+  verbose     = FALSE
+)
