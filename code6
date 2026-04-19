@@ -1,0 +1,115 @@
+# ============================================================
+# INSTALL REQUIRED PACKAGES
+# ============================================================
+BiocManager::install(c("lipidr", "limma"))
+install.packages(c("ggplot2", "ggrepel", "ComplexHeatmap",
+                   "circlize", "patchwork"))
+
+# ============================================================
+# STEP 1 — Differential Analysis with lipidr + limma [5, 12]
+# ============================================================
+library(lipidr)
+library(limma)
+
+# Run differential analysis: disease vs. control
+# lipidr internally calls limma's lmFit + eBayes
+de_results <- de_analysis(
+  data    = d_norm_istd,
+  Disease - Control,       # contrast: numerator vs denominator
+  measure = "Area"
+)
+
+# Extract significant lipids: FDR < 0.05 AND |logFC| > 1
+sig_lipids <- significant_molecules(
+  de_results,
+  p.cutoff  = 0.05,
+  logfc.cutoff = 1
+)
+
+cat("Significant lipids:", nrow(sig_lipids), "\n")
+head(sig_lipids[order(sig_lipids$adj.P.Val), ])
+
+# ============================================================
+# STEP 2 — Volcano Plot [new-K]
+# ============================================================
+library(ggplot2)
+library(ggrepel)
+
+# Prepare data for plotting
+volcano_data <- as.data.frame(de_results) %>%
+  dplyr::mutate(
+    Significance = dplyr::case_when(
+      adj.P.Val < 0.05 & logFC >  1 ~ "Up",
+      adj.P.Val < 0.05 & logFC < -1 ~ "Down",
+      TRUE ~ "NS"
+    )
+  )
+
+# Build volcano plot
+ggplot(volcano_data,
+       aes(x = logFC, y = -log10(adj.P.Val),
+           color = Significance)) +
+  geom_point(alpha = 0.6, size = 1.5) +
+  geom_hline(yintercept = -log10(0.05),
+             linetype = "dashed", color = "grey40") +
+  geom_vline(xintercept = c(-1, 1),
+             linetype = "dashed", color = "grey40") +
+  scale_color_manual(
+    values = c("Up" = "#E64B35", "Down" = "#4DBBD5", "NS" = "grey70")
+  ) +
+  # Label top 15 most significant lipids
+  geom_text_repel(
+    data = volcano_data %>%
+      dplyr::filter(Significance != "NS") %>%
+      dplyr::slice_min(adj.P.Val, n = 15),
+    aes(label = Molecule),
+    size = 3, max.overlaps = 20
+  ) +
+  labs(
+    title = "Differential Lipid Analysis: Disease vs. Control",
+    x     = "log₂ Fold Change",
+    y     = "-log₁₀ (Adjusted P-value)"
+  ) +
+  theme_bw()
+
+# ============================================================
+# STEP 3 — Heatmap of significant lipids [14]
+# ============================================================
+library(ComplexHeatmap)
+library(circlize)
+
+# Extract intensity matrix for significant lipids only
+sig_matrix <- assay(d_norm_istd)[sig_lipids$Molecule, ]
+sig_matrix_scaled <- t(scale(t(sig_matrix)))  # z-score per lipid
+
+# Annotation bar: color samples by group
+col_annot <- HeatmapAnnotation(
+  Group = colData(d_norm_istd)$group,
+  col   = list(Group = c("Disease" = "#E64B35",
+                          "Control" = "#4DBBD5"))
+)
+
+# Annotation bar: color lipids by class
+row_annot <- rowAnnotation(
+  Class = sig_lipids$Class,
+  col   = list(Class = setNames(
+    rainbow(length(unique(sig_lipids$Class))),
+    unique(sig_lipids$Class)
+  ))
+)
+
+# Draw heatmap with biclustering
+Heatmap(
+  sig_matrix_scaled,
+  name              = "Z-score",
+  top_annotation    = col_annot,
+  right_annotation  = row_annot,
+  col               = colorRamp2(c(-2, 0, 2),
+                                  c("#4DBBD5", "white", "#E64B35")),
+  show_row_names    = TRUE,
+  show_column_names = FALSE,
+  cluster_rows      = TRUE,
+  cluster_columns   = TRUE,
+  row_names_gp      = gpar(fontsize = 7),
+  column_title      = "Significant Lipids — Disease vs. Control"
+)
