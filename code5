@@ -1,0 +1,123 @@
+# ============================================================
+# INSTALL REQUIRED PACKAGES
+# ============================================================
+BiocManager::install(c("limma", "sva"))
+install.packages(c("ggplot2", "ggfortify", "patchwork"))
+
+# ============================================================
+# PRELIMINARY: Visualize batch structure BEFORE correction
+# This step is mandatory — never apply correction blindly
+# ============================================================
+library(ggfortify)
+
+expr_matrix <- assay(d_norm_istd)
+metadata_df <- colData(d_norm_istd) |> as.data.frame()
+design_mat  <- model.matrix(~ group, data = metadata_df)
+
+pca_before  <- prcomp(t(expr_matrix), scale. = TRUE)
+
+p_before <- autoplot(
+  pca_before,
+  data   = metadata_df,
+  colour = "batch",
+  shape  = "group",
+  frame  = TRUE, frame.type = "t"
+) +
+  ggtitle("PCA BEFORE Batch Correction — colored by batch") +
+  theme_bw()
+
+print(p_before)
+# If samples cluster by batch rather than by group:
+# batch effect is present → proceed with correction
+
+# ============================================================
+# OPTION A — limma removeBatchEffect (RECOMMENDED)
+# Best for simple, well-documented batch structures [12]
+# ============================================================
+library(limma)
+
+expr_corrected_limma <- removeBatchEffect(
+  expr_matrix,
+  batch  = metadata_df$batch,
+  design = design_mat
+)
+
+# ============================================================
+# OPTION B — ComBat / sva (RECOMMENDED for small batches)
+# Empirical Bayes; superior performance in lipidomics [new-I, new-J]
+# ============================================================
+library(sva)
+
+# ComBat: known batch labels required
+expr_corrected_combat <- ComBat(
+  dat        = expr_matrix,
+  batch      = metadata_df$batch,
+  mod        = design_mat,
+  par.prior  = TRUE,     # parametric empirical Bayes (default)
+  prior.plots = FALSE
+)
+
+# ============================================================
+# OPTION C — SVA: unknown or partially known batch structure
+# Estimates latent technical variation without batch labels [new-J]
+# ============================================================
+
+# Step 1: Estimate number of surrogate variables
+n_sv <- num.sv(expr_matrix, design_mat, method = "leek")
+cat("Estimated number of surrogate variables:", n_sv, "\n")
+
+# Step 2: Estimate surrogate variables
+svobj <- sva(expr_matrix, design_mat, n.sv = n_sv)
+
+# Step 3: Include surrogate variables in downstream model
+# SVA correction is applied at the modeling stage, not by
+# directly modifying the data matrix
+design_with_sv <- cbind(design_mat, svobj$sv)
+
+# Use design_with_sv in all downstream limma analyses
+fit <- lmFit(expr_matrix, design_with_sv)
+
+# ============================================================
+# MANDATORY VERIFICATION: PCA after batch correction
+# Samples should now cluster by BIOLOGY, not by batch
+# ============================================================
+pca_after_limma  <- prcomp(t(expr_corrected_limma),  scale. = TRUE)
+pca_after_combat <- prcomp(t(expr_corrected_combat), scale. = TRUE)
+
+p_after_limma <- autoplot(
+  pca_after_limma,
+  data   = metadata_df,
+  colour = "group",
+  shape  = "batch",
+  frame  = TRUE, frame.type = "t"
+) +
+  ggtitle("After limma Correction — should cluster by group") +
+  theme_bw()
+
+p_after_combat <- autoplot(
+  pca_after_combat,
+  data   = metadata_df,
+  colour = "group",
+  shape  = "batch",
+  frame  = TRUE, frame.type = "t"
+) +
+  ggtitle("After ComBat Correction — should cluster by group") +
+  theme_bw()
+
+# Side-by-side comparison: before vs. after
+library(patchwork)
+(p_before | p_after_limma | p_after_combat) +
+  plot_annotation(
+    title = "Batch Effect Correction Comparison",
+    theme = theme_bw()
+  )
+
+# ============================================================
+# DECISION RULE: Choosing the right correction method
+# ============================================================
+# Known batches, simple design, large batches    → limma
+# Known batches, small batches (<10 samples)     → ComBat
+# Unknown/complex batch structure                → SVA
+# Multi-platform / multi-site integration        → HarmonizR
+# Batches fully confounded with biology          → DO NOT CORRECT
+#   → redesign the study or use covariate modeling only
