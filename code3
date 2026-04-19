@@ -1,0 +1,109 @@
+# ============================================================
+# INSTALL REQUIRED PACKAGES
+# ============================================================
+BiocManager::install("lipidr")
+install.packages(c("NormalyzerDE", "NormalizeMets", "ggplot2"))
+
+# ============================================================
+# OPTION A — ISTD-based normalization via lipidr (RECOMMENDED)
+# Best when a comprehensive IS panel is available [5, new-C]
+# ============================================================
+library(lipidr)
+
+# Your peak table must contain IS entries with clear labels
+# Convention: IS lipids are typically labeled with isotope
+# markers, e.g., "PC(17:0/17:0)" or "d9-PC(16:0/18:1)"
+# lipidr identifies IS entries from the experiment's rowData
+
+# Apply class-specific ISTD normalization
+# Each lipid class is corrected by its matching IS compound
+d_norm_istd <- normalize_istd(d, method = "ISTD")
+
+# Verify normalization improved CV in QC samples
+# Target: CV < 20% for all lipid classes after normalization
+plot_cv(d_norm_istd, cv_threshold = 0.20) +
+  ggplot2::ggtitle("CV Distribution After ISTD Normalization") +
+  ggplot2::theme_bw()
+
+# ============================================================
+# OPTION B — Probabilistic Quotient Normalization (PQN)
+# Best when IS coverage is incomplete [5, new-D]
+# Identified as one of the top-performing methods for
+# lipidomics in systematic comparative evaluations
+# ============================================================
+
+# Apply PQN normalization
+# PQN computes a per-sample quotient against a reference
+# (median across all samples) and corrects accordingly
+d_norm_pqn <- normalize_pqn(d)
+
+# ============================================================
+# OPTION C — LOESS QC-based normalization
+# Best for large studies with time-dependent instrument drift
+# Requires pooled QC samples injected throughout the run [new-D]
+# ============================================================
+library(NormalyzerDE)
+
+# Extract the intensity matrix
+expr_matrix <- assay(d)
+
+# Define QC sample indices (samples injected as pooled QC)
+qc_indices <- which(colData(d)$SampleType == "QC")
+
+# Apply LOESS correction using QC samples as reference
+# LOESS smooths the signal drift over injection order
+loess_normalized <- performLOESSNormalization(
+  expr_matrix,
+  qcSampleIndices = qc_indices
+)
+
+# ============================================================
+# OPTION D — Systematic comparison of normalization methods
+# Use NormalyzerDE to empirically select the best approach
+# for your specific dataset before committing to one [new-E]
+# ============================================================
+library(NormalyzerDE)
+
+# NormalyzerDE evaluates multiple normalization methods
+# and generates a PDF report with CV and PCA comparisons
+normalyzer(
+  jobName    = "lipidomics_normalization_comparison",
+  designPath = "sample_metadata.csv",
+  dataPath   = "lipid_peak_table.csv",
+  outputDir  = "normalyzer_output/"
+)
+# Output: PDF report comparing ISTD, PQN, quantile,
+# median, VSN, LOESS, and other methods side-by-side
+
+# ============================================================
+# VISUALIZE: Compare pre- vs post-normalization distributions
+# Essential QC step to confirm normalization was effective
+# ============================================================
+library(ggplot2)
+
+# Density plot before normalization
+p1 <- plot_lipid_dist(d, log = TRUE) +
+  ggtitle("Before Normalization") +
+  theme_bw()
+
+# Density plot after ISTD normalization
+p2 <- plot_lipid_dist(d_norm_istd, log = TRUE) +
+  ggtitle("After ISTD Normalization") +
+  theme_bw()
+
+# Density plot after PQN normalization
+p3 <- plot_lipid_dist(d_norm_pqn, log = TRUE) +
+  ggtitle("After PQN Normalization") +
+  theme_bw()
+
+# Display side-by-side for comparison
+library(patchwork)
+p1 | p2 | p3
+
+# ============================================================
+# DECISION RULE: How to choose the right method
+# ============================================================
+# IS panel covers all major lipid classes → USE: ISTD
+# IS panel is incomplete (<50% class coverage) → USE: PQN
+# Large study (>100 samples) with QC pool injections → USE: LoessQC
+# Uncertain which method is best → USE: NormalyzerDE first
