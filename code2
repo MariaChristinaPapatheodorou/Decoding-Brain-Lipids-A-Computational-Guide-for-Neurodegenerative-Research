@@ -1,0 +1,137 @@
+# ============================================================
+# INSTALL REQUIRED PACKAGES
+# ============================================================
+BiocManager::install("rgoslin")
+BiocManager::install("lipidr")
+install.packages("dplyr")
+
+# ============================================================
+# OPTION A — rgoslin (RECOMMENDED)
+# Full grammar-based parsing, validation and normalization
+# against the current LIPID MAPS shorthand standard [32]
+# ============================================================
+library(rgoslin)
+library(dplyr)
+
+# Define a representative vector of lipid names
+# as they might appear in a raw MS-DIAL or Skyline export
+lipid_names_raw <- c(
+  "PC 36:4",
+  "GPC(18:2/18:2)",
+  "PE(16:0/20:4)",
+  "TG 54:3",
+  "SM d18:1/16:0",
+  "Cer(d18:1/24:1)",
+  "LPC 18:2",
+  "PA 34:2"
+)
+
+# Parse all names against all available grammars simultaneously
+# rgoslin will test each grammar in order; first match wins
+parsed <- parseLipidNames(lipid_names_raw)
+
+# Inspect the full structured output
+print(parsed)
+
+# Key output columns:
+# - Normalized.Name     : standardized LIPID MAPS shorthand
+# - Lipid.Maps.Category : e.g. "Glycerophospholipids"
+# - Lipid.Maps.Main.Class : e.g. "PC", "PE", "SM"
+# - Fatty.Acyl.Sum.Formula : molecular formula
+# - Exact.Mass          : monoisotopic mass (Da)
+# - Messages            : NA if parsed successfully, error if not
+
+# Extract successfully parsed lipids
+parsed_ok  <- parsed %>% filter(is.na(Messages))
+parsed_err <- parsed %>% filter(!is.na(Messages))
+
+cat("Successfully parsed:", nrow(parsed_ok), "lipids\n")
+cat("Failed to parse:   ", nrow(parsed_err), "lipids\n")
+
+# Print the names that failed — these require manual correction
+if (nrow(parsed_err) > 0) {
+  cat("Names requiring manual review:\n")
+  print(parsed_err$Original.Name)
+}
+
+# ============================================================
+# APPLY NORMALIZATION TO THE FULL PEAK TABLE
+# ============================================================
+
+# Assume peak_table has a column "LipidName" with raw names
+all_names   <- peak_table$LipidName
+parsed_full <- parseLipidNames(all_names)
+
+# Replace raw names with normalized LIPID MAPS names
+# where parsing succeeded; retain original name otherwise
+peak_table$LipidName_normalized <- ifelse(
+  is.na(parsed_full$Messages),
+  parsed_full$Normalized.Name,
+  peak_table$LipidName              # keep original if parsing failed
+)
+
+# Annotate peak table with class and category information
+peak_table$LipidClass    <- parsed_full$Lipid.Maps.Main.Class
+peak_table$LipidCategory <- parsed_full$Lipid.Maps.Category
+
+# Summary of class coverage after normalization
+table(peak_table$LipidClass)
+
+# ============================================================
+# OPTION B — lipidr internal parser
+# Suitable for pipelines built entirely within the lipidr
+# ecosystem; parses class, carbon count, and double bonds [5]
+# ============================================================
+library(lipidr)
+
+# Convert the normalized peak table to a lipidr experiment
+# lipidr will parse LipidName_normalized automatically
+d <- as_lipidomics_experiment(peak_table)
+
+# Inspect how lipidr has parsed the lipid names
+lipid_char_table(d)
+
+# Summary of recognized classes
+summary(lipid_char_table(d)$Class)
+
+# ============================================================
+# INTEGRATING rgoslin OUTPUT INTO lipidr
+# Best practice: normalize with rgoslin first, then
+# update the lipidr experiment object with corrected names
+# ============================================================
+
+# Step 1: Extract original names from lipidr object
+old_names <- rowData(d)$Molecule
+
+# Step 2: Parse with rgoslin and extract normalized names
+goslin_result    <- parseLipidNames(old_names)
+normalized_names <- goslin_result$Normalized.Name
+
+# Step 3: Replace names in the lipidr object
+# (use only for successfully parsed entries)
+valid_idx        <- !is.na(goslin_result$Messages)
+normalized_names[valid_idx] <- old_names[valid_idx]  # keep original if failed
+
+d_normalized_names <- update_molecule_names(
+  d,
+  old_names,
+  normalized_names
+)
+
+# Verify the update
+lipid_char_table(d_normalized_names)
+
+# ============================================================
+# OPTION C — Manual correction with gsub()
+# Last-resort approach for isolated non-standard entries
+# that automated parsers cannot handle
+# ============================================================
+
+# Example: correct a vendor-specific prefix
+peak_table$LipidName <- gsub("^GPC\\(", "PC(", peak_table$LipidName)
+peak_table$LipidName <- gsub("^GPE\\(", "PE(", peak_table$LipidName)
+peak_table$LipidName <- gsub("^LPE ",   "LPE(",  peak_table$LipidName)
+
+# After manual corrections, re-run rgoslin to verify
+re_parsed <- parseLipidNames(peak_table$LipidName)
+sum(is.na(re_parsed$Messages))  # Should increase after corrections
