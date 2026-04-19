@@ -1,0 +1,44 @@
+# ============================================================
+# MULTI-OMICS INTEGRATION FRAMEWORK (mixOmics DIABLO)
+# Combines lipidomics + proteomics for network-level analysis
+# ============================================================
+BiocManager::install("mixOmics")
+library(mixOmics)
+
+# Assume proteomics data is available as a separate matrix
+# with identical sample identifiers
+# lipidome_matrix: samples × lipids (from lipidomics pipeline)
+# proteome_matrix: samples × proteins (from proteomics pipeline)
+
+lipidome_matrix  <- t(assay(d_norm_istd))
+# proteome_matrix <- [load from proteomics pipeline]
+
+# Define the multi-omics data list
+data_list <- list(
+  Lipidomics = lipidome_matrix
+  # Proteomics = proteome_matrix  # add when available
+)
+
+# Define biological outcome
+Y <- colData(d_norm_istd)$group
+
+# Run DIABLO: identifies correlated components across omics layers
+# that jointly discriminate disease from control
+diablo_model <- block.splsda(
+  X        = data_list,
+  Y        = Y,
+  ncomp    = 2,
+  keepX    = list(Lipidomics = c(20, 20))
+  # Add keepX entries for each additional omics layer
+)
+
+# Visualize cross-omics correlation network
+plotDiablo(diablo_model, ncomp = 1)
+
+# Circos plot: shows correlated lipid-protein pairs
+circosPlot(
+  diablo_model,
+  cutoff    = 0.7,      # correlation threshold for display
+  line      = TRUE,
+  color.blocks = c("#E64B35", "#4DBBD5")
+)
