@@ -1,0 +1,115 @@
+# ============================================================
+# INSTALL ALL REQUIRED PACKAGES
+# ============================================================
+if (!requireNamespace("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+
+BiocManager::install(c("MSnbase", "xcms", "lipidr", "SummarizedExperiment"))
+install.packages(c("readr", "data.table", "tidyverse"))
+
+# ============================================================
+# OPTION A — MSnbase
+# Raw .mzML import: recommended for full spectral fidelity
+# and native Bioconductor ecosystem integration [11]
+# ============================================================
+library(MSnbase)
+
+# "onDisk" mode reads only metadata into RAM initially;
+# spectral data is loaded lazily on demand.
+# Essential for large multi-sample datasets.
+raw_data <- readMSData(
+  files = c("sample_01.mzML",
+            "sample_02.mzML",
+            "sample_03.mzML"),
+  mode  = "onDisk"
+)
+
+show(raw_data)             # Structural overview of the experiment
+length(raw_data)           # Total number of spectra loaded
+fileNames(raw_data)        # Source file paths
+msLevel(raw_data)          # MS levels present (MS1 and/or MS2)
+
+# ============================================================
+# OPTION B — XCMS
+# Raw import + automated peak detection and alignment [10]
+# Recommended when a peak table does not yet exist
+# ============================================================
+library(xcms)
+
+# Step 1: Define chromatographic peak detection parameters
+# CentWave is the standard algorithm for UHPLC-HRMS data
+cwp <- CentWaveParam(
+  ppm        = 10,      # mass accuracy window (adjust to instrument)
+  peakwidth  = c(5, 30), # expected peak width range in seconds
+  snthresh   = 10        # signal-to-noise threshold
+)
+
+# Step 2: Import raw files and detect chromatographic peaks
+xdata <- readMSData(
+  files = c("sample_01.mzML", "sample_02.mzML"),
+  mode  = "onDisk"
+)
+xdata <- findChromPeaks(xdata, param = cwp)
+
+# Step 3: Correct for retention time drift across samples
+xdata <- adjustRtime(xdata, param = ObiwarpParam())
+
+# Step 4: Group peaks across samples into consensus features
+xdata <- groupChromPeaks(
+  xdata,
+  param = PeakDensityParam(
+    sampleGroups = c("control", "disease")
+  )
+)
+
+# Step 5: Export the feature intensity table for downstream use
+peak_table_xcms <- featureValues(xdata, value = "into")
+head(peak_table_xcms)
+
+# ============================================================
+# OPTION C — readr / data.table
+# Pre-processed peak table import (MS-DIAL or Skyline) [18, 19]
+# Recommended for speed and simplicity when spectral
+# reprocessing is not required
+# ============================================================
+library(readr)
+library(data.table)
+
+# readr: best for standard CSV files up to ~500 MB
+peak_table <- read_csv("lipid_peak_table.csv")
+
+# data.table: best for very large files (> 500 MB)
+# fread() is significantly faster than read.csv() or read_csv()
+peak_table_dt <- fread("lipid_peak_table.csv")
+
+# Always inspect the imported table before proceeding
+head(peak_table)
+dim(peak_table)            # rows = lipid features, columns = samples
+sum(is.na(peak_table))     # Flag if missing values exceed 5% of cells
+
+# ============================================================
+# OPTION D — LipidSigR
+# Integrated import + experiment object construction [26]
+# Recommended for users preferring an all-in-one environment
+# with built-in statistical visualization
+# ============================================================
+library(LipidSigR)
+
+# LipidSigR requires a specific two-table input format:
+# (1) lipid intensity matrix, (2) sample group metadata
+se <- as_summarized_experiment(
+  lipid_char_table = peak_table,
+  group_info       = metadata
+)
+se   # Inspect the SummarizedExperiment object
+
+# ============================================================
+# FINAL STEP — Attach sample metadata (all options)
+# ============================================================
+metadata <- read_csv("sample_metadata.csv")
+
+# Verify that every sample column has a metadata entry
+# This check must pass before any downstream analysis
+stopifnot(
+  all(colnames(peak_table)[-1] %in% metadata$SampleID)
+)
