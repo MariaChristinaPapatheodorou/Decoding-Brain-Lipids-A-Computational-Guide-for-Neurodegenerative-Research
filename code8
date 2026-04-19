@@ -1,0 +1,87 @@
+# ============================================================
+# TIER 1: Extract statistically significant lipids
+# (from Section 3.1 — de_analysis output)
+# ============================================================
+library(lipidr)
+library(dplyr)
+
+# Focus on plasmalogens specifically (PE-P and PC-P species)
+plasmalogens <- sig_lipids %>%
+  dplyr::filter(grepl("^PE.P|^PC.P|plasmalogen",
+                       Molecule, ignore.case = TRUE))
+
+cat("Plasmalogen species significantly altered:", nrow(plasmalogens), "\n")
+cat("Direction:", ifelse(mean(plasmalogens$logFC) < 0,
+                         "DEPLETED (consistent with AD)", "ELEVATED"), "\n")
+
+# Focus on ceramides
+ceramides <- sig_lipids %>%
+  dplyr::filter(Class == "Cer") %>%
+  dplyr::arrange(desc(logFC))
+
+cat("\nTop elevated ceramides:\n")
+print(ceramides[1:5, c("Molecule", "logFC", "adj.P.Val")])
+
+# Focus on sphingomyelins — examine chain length distribution
+sm_species <- de_results %>%
+  dplyr::filter(Class == "SM") %>%
+  dplyr::mutate(
+    ChainLength = as.numeric(
+      gsub("SM .*?(\\d+):\\d+.*", "\\1", Molecule)
+    )
+  )
+
+# Summarize direction of change by chain length
+sm_summary <- sm_species %>%
+  dplyr::group_by(ChainLength) %>%
+  dplyr::summarise(
+    mean_logFC   = mean(logFC, na.rm = TRUE),
+    n_significant = sum(adj.P.Val < 0.05, na.rm = TRUE)
+  ) %>%
+  dplyr::arrange(ChainLength)
+
+print(sm_summary)
+# Expected in neurodegeneration:
+# Short-chain SM (C16, C18): positive logFC (elevated)
+# Long-chain SM (C24, C26): negative logFC (depleted)
+
+# ============================================================
+# TIER 2: Structural enrichment context
+# (from Section 3.2 — LSEA output)
+# ============================================================
+
+# Visualize class-level enrichment with biological annotation
+plot_class_enrichment(de_results, sig_sets) +
+  ggplot2::ggtitle(
+    "Lipid Class Enrichment — Neurodegeneration Signature"
+  ) +
+  ggplot2::theme_bw()
+
+# ============================================================
+# TIER 3: Generate mechanistic summary table
+# ============================================================
+
+mechanistic_summary <- data.frame(
+  LipidCategory = c("Ethanolamine Plasmalogens (PE-P)",
+                    "Ceramides (Cer C24:0/C24:1)",
+                    "Long-chain Sphingomyelins (SM C24)",
+                    "Polyunsaturated PC (PC 36:6, 38:6)"),
+  Direction = c("Depleted", "Elevated", "Depleted", "Depleted"),
+  MechanisticInterpretation = c(
+    "Loss of antioxidant defense; increased Aβ production via γ-secretase disinhibition",
+    "Pro-apoptotic signaling; mitochondrial dysfunction; S1P axis suppression",
+    "Demyelination; impaired saltatory conduction in white matter tracts",
+    "Oxidative degradation of DHA-containing membranes; ferroptosis susceptibility"
+  ),
+  BiologicalProcess = c(
+    "Peroxisomal dysfunction / ROS",
+    "Sphingolipid rheostat",
+    "Myelin integrity",
+    "Lipid peroxidation"
+  )
+)
+
+print(mechanistic_summary)
+write.csv(mechanistic_summary,
+          "mechanistic_interpretation_summary.csv",
+          row.names = FALSE)
