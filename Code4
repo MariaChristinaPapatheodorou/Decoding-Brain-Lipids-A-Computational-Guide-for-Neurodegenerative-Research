@@ -1,0 +1,135 @@
+# ============================================================
+# INSTALL REQUIRED PACKAGES
+# ============================================================
+BiocManager::install("lipidr")
+install.packages(c("ggplot2", "ggfortify", "patchwork",
+                   "dplyr", "metabolomicsR"))
+
+# ============================================================
+# OPTION A — lipidr built-in QC visualization (RECOMMENDED)
+# Fully integrated with SummarizedExperiment object [5]
+# ============================================================
+library(lipidr)
+library(ggplot2)
+
+# PCA plot — color by biological group, shape by batch
+# QC pool samples should cluster tightly at the plot center
+plot_pca(
+  d_norm_istd,
+  color_by   = "group",
+  shape_by   = "batch",
+  components = c(1, 2)
+) +
+  ggtitle("PCA — Post-Normalization QC") +
+  theme_bw()
+
+# Density plot — intensity distribution across all samples
+# After normalization, curves should overlap closely
+plot_lipid_dist(d_norm_istd, log = TRUE) +
+  ggtitle("Log-Intensity Distribution — All Samples") +
+  theme_bw()
+
+# CV plot for QC pool samples
+# Acceptable threshold: CV < 20% (stringent) or < 30% (standard)
+plot_cv(d_norm_istd, cv_threshold = 0.20) +
+  ggtitle("CV Distribution in QC Pool Samples") +
+  theme_bw()
+
+# ============================================================
+# OPTION B — ggplot2 + ggfortify: Custom PCA with Hotelling T²
+# Recommended for rigorous outlier documentation [new-F, new-G]
+# ============================================================
+library(ggfortify)
+
+# Extract the normalized intensity matrix and run PCA
+expr_matrix  <- assay(d_norm_istd)
+metadata_df  <- colData(d_norm_istd) |> as.data.frame()
+pca_result   <- prcomp(t(expr_matrix), scale. = TRUE)
+
+# Calculate variance explained by each component
+var_explained <- round(
+  pca_result$sdev^2 / sum(pca_result$sdev^2) * 100, 1
+)
+
+# Plot PCA with 95% Hotelling T² ellipse per group
+# Samples outside the ellipse are flagged as potential outliers
+autoplot(
+  pca_result,
+  data         = metadata_df,
+  colour       = "group",
+  shape        = "batch",
+  frame        = TRUE,
+  frame.type   = "t",       # Hotelling T² ellipse
+  frame.level  = 0.95
+) +
+  labs(
+    title   = "PCA with 95% Hotelling T² Ellipse",
+    x       = paste0("PC1 (", var_explained[1], "% variance)"),
+    y       = paste0("PC2 (", var_explained[2], "% variance)")
+  ) +
+  theme_bw()
+
+# Identify and document outlier samples programmatically
+# Flag samples > 3 SD from centroid on PC1 or PC2
+pca_scores <- as.data.frame(pca_result$x)
+pca_scores$SampleID <- rownames(pca_scores)
+
+outliers <- pca_scores |>
+  dplyr::filter(
+    abs(PC1) > 3 * sd(PC1) |
+    abs(PC2) > 3 * sd(PC2)
+  )
+
+cat("Flagged outlier samples:\n")
+print(outliers$SampleID)
+# IMPORTANT: investigate raw data and metadata for each
+# flagged sample before deciding on exclusion
+
+# ============================================================
+# OPTION C — metabolomicsR: Comprehensive QC pipeline
+# Includes outlier detection, missing value filtering,
+# and multiple dimensionality reduction methods [new-H]
+# ============================================================
+library(metabolomicsR)
+
+# Convert to metabolomicsR Metabolite object
+metab_obj <- create_Metabolite(
+  assayData   = as.data.frame(t(expr_matrix)),
+  featureData = as.data.frame(rowData(d_norm_istd)),
+  sampleData  = metadata_df
+)
+
+# Run automated QC pipeline
+# Removes features/samples beyond missing rate threshold
+# Detects outliers at ±5 SD by default
+metab_qc <- QC_pipeline(
+  metab_obj,
+  missing_rate_feature = 0.50,   # remove features missing >50%
+  missing_rate_sample  = 0.50,   # remove samples missing >50%
+  outlier_threshold    = 5       # flag samples > 5 SD from mean
+)
+
+# UMAP as complement to PCA — reveals non-linear structure
+plot_umap(metab_qc, color = "group") +
+  ggtitle("UMAP — Non-linear Dimensionality Reduction") +
+  theme_bw()
+
+# ============================================================
+# COMPOSITE QC SUMMARY PANEL
+# Arrange all key QC plots into a single figure for reporting
+# ============================================================
+library(patchwork)
+
+p_pca  <- plot_pca(d_norm_istd, color_by = "group") +
+           theme_bw() + ggtitle("A — PCA")
+p_dist <- plot_lipid_dist(d_norm_istd, log = TRUE) +
+           theme_bw() + ggtitle("B — Intensity Distribution")
+p_cv   <- plot_cv(d_norm_istd, cv_threshold = 0.20) +
+           theme_bw() + ggtitle("C — CV in QC Samples")
+
+(p_pca | p_dist) / p_cv +
+  plot_annotation(
+    title    = "Quality Control Summary Panel",
+    subtitle = "Post-normalization QC assessment",
+    theme    = theme_bw()
+  )
